@@ -119,6 +119,10 @@ def is_window(hwnd):
     return bool(IS_WINDOWS and hwnd and user32.IsWindow(hwnd))
 
 
+def is_foreground(hwnd):
+    return bool(IS_WINDOWS and hwnd and user32.GetForegroundWindow() == hwnd)
+
+
 def find_by_title(title):
     """제목이 정확히 일치하는 창의 핸들을 찾는다. 없으면 0."""
     for hwnd, text in list_windows():

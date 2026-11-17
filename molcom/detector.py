@@ -1,12 +1,13 @@
-"""얼굴 검출과 전환 판정 로직."""
+"""얼굴 검출, 얼굴 특징 추출, 전환 판정 로직."""
 
 import os
 import sys
-import time
 
 import cv2
+import numpy as np
 
-MODEL_FILE = "face_detection_yunet_2023mar.onnx"
+DETECT_MODEL = "face_detection_yunet_2023mar.onnx"
+RECOG_MODEL = "face_recognition_sface_2021dec.onnx"
 
 # 검출 속도를 위해 입력 프레임의 긴 변을 이 크기로 줄인다.
 DETECT_WIDTH = 640
@@ -20,26 +21,51 @@ def resource_path(*parts):
     return os.path.join(base, *parts)
 
 
-class FaceDetector:
-    """YuNet 얼굴 검출기.
+def read_image(path):
+    """이미지 파일을 읽는다. 읽지 못하면 None.
 
-    detect()는 (x, y, w, h) 상자 목록을 원본 프레임 좌표로 돌려준다.
+    cv2.imread는 Windows에서 한글 경로를 열지 못하므로 직접 읽어 디코딩한다.
     """
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+    except OSError:
+        return None
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _load(factory, name, *args):
+    """모델을 메모리에서 읽어 생성한다 (한글 경로 대응).
+
+    버퍼 입력을 지원하지 않는 구버전 OpenCV에서는 파일 경로로 연다.
+    """
+    path = resource_path("models", name)
+    if not os.path.isfile(path):
+        raise FileNotFoundError("모델 파일을 찾을 수 없습니다: " + path)
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+        return factory("onnx", data, np.empty(0, np.uint8), *args)
+    except (cv2.error, TypeError):
+        return factory(path, "", *args)
+
+
+class FaceEngine:
+    """YuNet 얼굴 검출과 SFace 얼굴 특징 추출."""
 
     def __init__(self, score_threshold=0.7, min_face_ratio=0.04):
-        model = resource_path("models", MODEL_FILE)
-        if not os.path.isfile(model):
-            raise FileNotFoundError("얼굴 검출 모델을 찾을 수 없습니다: " + model)
         self.min_face_ratio = min_face_ratio
         self._size = (0, 0)
-        self._net = cv2.FaceDetectorYN.create(
-            model, "", (320, 240), score_threshold, 0.3, 50
-        )
-
-    def set_score_threshold(self, value):
-        self._net.setScoreThreshold(float(value))
+        self._detector = _load(cv2.FaceDetectorYN.create, DETECT_MODEL,
+                               (320, 240), score_threshold, 0.3, 50)
+        self._recognizer = _load(cv2.FaceRecognizerSF.create, RECOG_MODEL)
 
     def detect(self, frame):
+        """얼굴 목록을 돌려준다.
+
+        각 항목은 YuNet 출력 행(상자 4개 값, 특징점 10개 값, 점수)이며
+        좌표는 원본 프레임 기준이다.
+        """
         h, w = frame.shape[:2]
         scale = min(1.0, DETECT_WIDTH / float(max(w, h)))
         if scale < 1.0:
@@ -48,60 +74,51 @@ class FaceDetector:
             small = frame
         sh, sw = small.shape[:2]
         if (sw, sh) != self._size:
-            self._net.setInputSize((sw, sh))
+            self._detector.setInputSize((sw, sh))
             self._size = (sw, sh)
 
-        _, faces = self._net.detect(small)
-        boxes = []
+        _, faces = self._detector.detect(small)
         if faces is None:
-            return boxes
+            return []
         min_h = self.min_face_ratio * h
+        result = []
         for row in faces:
-            fx, fy, fw, fh = (float(v) / scale for v in row[:4])
-            if fh < min_h:
-                continue
-            boxes.append((int(fx), int(fy), int(fw), int(fh)))
-        return boxes
+            row = row.copy()
+            row[:14] /= scale
+            if row[3] >= min_h:
+                result.append(row)
+        return result
+
+    def embed(self, frame, face):
+        """얼굴 하나의 특징 벡터(길이 1로 정규화)를 구한다."""
+        aligned = self._recognizer.alignCrop(frame, face.reshape(1, -1))
+        feature = self._recognizer.feature(aligned).flatten().astype(np.float32)
+        norm = float(np.linalg.norm(feature))
+        return feature / norm if norm > 0 else feature
+
+    def embed_largest(self, image):
+        """사진에서 가장 큰 얼굴의 특징 벡터를 구한다. 얼굴이 없으면 None."""
+        faces = self.detect(image)
+        if not faces:
+            return None
+        face = max(faces, key=lambda r: r[2] * r[3])
+        return self.embed(image, face)
 
 
-class SwitchTrigger:
-    """사람 수 관측값을 받아 창 전환 시점을 판정한다.
+def box_of(face):
+    return int(face[0]), int(face[1]), int(face[2]), int(face[3])
 
-    - 사람 수가 limit 이상인 프레임이 frames_needed 번 연속되면 한 번 발동한다.
-    - 발동 후에는 사람 수가 limit 미만인 상태가 rearm_seconds 동안
-      이어져야 다시 발동할 수 있다. 추가 인물이 계속 화면에 있는 동안
-      사용자가 원래 창으로 돌아가도 반복해서 전환되지 않게 하기 위함이다.
+
+class ConsecutiveTrigger:
+    """등록된 사람이 frames_needed 프레임 연속으로 보이면 발동한다.
+
+    한 번 발동한 뒤에도 그 사람이 보이는 동안에는 매 프레임 계속 발동한다.
     """
 
-    def __init__(self, limit=2, frames_needed=1, rearm_seconds=3.0, clock=time.monotonic):
-        self.limit = limit
+    def __init__(self, frames_needed=1):
         self.frames_needed = max(1, int(frames_needed))
-        self.rearm_seconds = float(rearm_seconds)
-        self._clock = clock
         self._streak = 0
-        self._armed = True
-        self._clear_since = None
 
-    @property
-    def armed(self):
-        return self._armed
-
-    def update(self, count):
-        """관측값 하나를 반영하고, 지금 전환해야 하면 True를 돌려준다."""
-        now = self._clock()
-        if count >= self.limit:
-            self._clear_since = None
-            self._streak += 1
-            if self._armed and self._streak >= self.frames_needed:
-                self._armed = False
-                return True
-            return False
-
-        self._streak = 0
-        if not self._armed:
-            if self._clear_since is None:
-                self._clear_since = now
-            if now - self._clear_since >= self.rearm_seconds:
-                self._armed = True
-                self._clear_since = None
-        return False
+    def update(self, hit):
+        self._streak = self._streak + 1 if hit else 0
+        return self._streak >= self.frames_needed
