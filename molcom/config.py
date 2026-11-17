@@ -6,12 +6,15 @@ import os
 DEFAULTS = {
     "camera_index": 0,
     "target_title": "",
-    "threshold": 70,         # 검출 신뢰도 기준(%). 낮을수록 민감하다.
-    "frames_needed": 1,      # 연속으로 감지되어야 하는 프레임 수
-    "match": 36,             # 인물 일치 기준(%). 낮을수록 쉽게 일치로 본다.
+    "sensitivity": "normal",   # 인식 민감도: low, normal, high
+    "instant": True,           # False면 3프레임 연속 감지 시 전환한다.
     "show_preview": True,
     "start_on_launch": False,
+    "tray_on_close": True,     # 감시 중 창을 닫으면 트레이에서 계속 실행한다.
 }
+
+# 민감도별 얼굴 일치 기준(코사인 유사도). normal은 OpenCV 권장값이다.
+SENSITIVITY = {"low": 0.45, "normal": 0.363, "high": 0.30}
 
 
 def data_dir():

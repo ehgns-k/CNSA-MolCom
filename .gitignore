@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
-build/
-dist/
+/build/
+/dist/
 *.spec
 .venv/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

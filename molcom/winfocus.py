@@ -123,6 +123,18 @@ def is_foreground(hwnd):
     return bool(IS_WINDOWS and hwnd and user32.GetForegroundWindow() == hwnd)
 
 
+def own_foreground():
+    """지금 전면에 있는 창이 이 프로그램의 창이면 True."""
+    if not IS_WINDOWS:
+        return False
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return False
+    pid = wintypes.DWORD(0)
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value == kernel32.GetCurrentProcessId()
+
+
 def find_by_title(title):
     """제목이 정확히 일치하는 창의 핸들을 찾는다. 없으면 0."""
     for hwnd, text in list_windows():
