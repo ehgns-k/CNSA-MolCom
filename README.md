@@ -60,8 +60,9 @@
 ## 직접 빌드
 
 Python 3.9 이상이 설치된 Windows에서 `build.bat`을 실행하면
-`dist\MolCom.exe`가 만들어진다. 릴리스의 실행 파일은 `v`로 시작하는 태그를
-푸시할 때 GitHub Actions(`.github/workflows/build.yml`)가 같은 스크립트로 빌드한다.
+`dist\MolCom.exe`가 만들어진다. 릴리스의 실행 파일은 `molcom/__init__.py`의
+버전을 올려 `main`에 푸시할 때 GitHub Actions(`.github/workflows/build.yml`)가
+같은 스크립트로 빌드해 게시한다.
 
 빌드 없이 소스에서 실행하려면 다음과 같이 한다.
 

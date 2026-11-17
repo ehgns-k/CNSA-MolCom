@@ -1,8 +1,12 @@
 name: Build Windows exe
 
+# molcom/__init__.py의 버전을 올려 main에 푸시하면 그 버전의 릴리스가 만들어진다.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths:
+      - "molcom/__init__.py"
+      - ".github/workflows/build.yml"
   workflow_dispatch:
 
 permissions:
@@ -28,11 +32,14 @@ jobs:
           name: MolCom-windows-x64
           path: dist/MolCom.exe
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/MolCom.exe \
-            --title "MolCom $GITHUB_REF_NAME" --generate-notes \
-          || gh release upload "$GITHUB_REF_NAME" dist/MolCom.exe --clobber
+          version="v$(python -c 'import molcom; print(molcom.__version__)')"
+          if gh release view "$version" >/dev/null 2>&1; then
+            gh release upload "$version" dist/MolCom.exe --clobber
+          else
+            gh release create "$version" dist/MolCom.exe --target "$GITHUB_SHA" \
+              --title "MolCom $version" --generate-notes
+          fi
